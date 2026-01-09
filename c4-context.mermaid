@@ -1,0 +1,13 @@
+C4Context
+title Metrics Monitoring - Context
+Person(sre, "SRE/Engineer", "Смотрит дашборды и алёрты")
+System(sys, "Metrics Monitoring System", "Сбор, хранение, алёртинг метрик")
+System_Ext(hosts, "Apps/Hosts/DB/Queues", "Источники метрик")
+System_Ext(notify, "Notification Providers", "Email/SMS/Pager/Webhooks")
+System_Ext(viz, "Visualization UI", "Grafana-like UI")
+
+Rel(hosts, sys, "Push/Pull metrics")
+Rel(sre, viz, "Просмотр графиков")
+Rel(viz, sys, "Query metrics")
+Rel(sys, notify, "Send alerts")
+Rel(sre, sys, "Manage rules/silences")
