@@ -1,0 +1,14 @@
+C4Component
+title Alerting Engine - Components
+Container_Boundary(a, "Alerting Engine") {
+  Component(ruleStore, "Rule Store", "DB", "Rules, routes, silences")
+  Component(scheduler, "Evaluation Scheduler", "Cron", "Triggers rule eval")
+  Component(evaluator, "Rule Evaluator", "Engine", "Runs queries + thresholds")
+  Component(dedup, "Deduplicator", "State", "Group, suppress duplicates")
+  Component(router, "Router", "Policy", "Route by labels/teams")
+  Component(sender, "Notifier", "HTTP", "Retry, backoff, escalation")
+}
+Rel(scheduler, evaluator, "run")
+Rel(evaluator, dedup, "firing/resolved events")
+Rel(dedup, router, "deduped alerts")
+Rel(router, sender, "destinations")
