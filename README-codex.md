@@ -1,124 +1,88 @@
-# README-codex — Ad Click Event Aggregation (Spring Boot, Java, Gradle)
+# README-codex — Metrics Monitoring & Alerting (Spring Boot, Java, Gradle)
 
 ## Цель
-Сгенерировать мульти-модульный Gradle репозиторий на Java/Spring Boot для системы агрегации кликов:
-- event-producer (dev-only)
-- stream-aggregator (near real-time агрегатор)
-- query-service (HTTP API для агрегатов и Top-N)
-- contracts (общие DTO/Avro/Proto, OpenAPI)
-- infra (docker-compose)
+Сгенерировать систему мониторинга:
+- collector (pull + push ingest)
+- ingestion-service (валидирует и пишет в TS storage)
+- query-service (API запросов)
+- alerting-service (оценка правил + дедуп + routing)
+- notification-gateway (mock)
+- contracts + infra
 
-## Рекомендуемый стек
-- Java 17+
-- Spring Boot 3.x
-- Gradle (Kotlin DSL предпочтительно)
-- Kafka: Redpanda (docker-compose) или Kafka
-- Stream processing:
-  - Вариант А (проще): Spring for Apache Kafka + Kafka Streams
-  - Вариант B (тяжелее): Flink (но для Spring Boot интервью обычно Kafka Streams)
-- Aggregated DB:
-  - ClickHouse (быстро, удобно для агрегатов) или Postgres (для простоты)
-- Observability: Micrometer + Prometheus endpoint (actuator)
+## Стек
+- Java 17+, Spring Boot 3.x, Gradle
+- Storage: ClickHouse (таблица time-series) или Timescale/Postgres
+- Cache: Redis (optional)
+- Queue: Kafka optional (для decouple)
+- Actuator + Micrometer
 
-## Модульная структура
-/settings.gradle.kts
-/build.gradle.kts
-/gradle/libs.versions.toml
+## Модули
 /modules
   /contracts
-  /event-producer
-  /stream-aggregator
+  /collector
+  /ingestion-service
   /query-service
-/infra
-  docker-compose.yml
-/docs
-  c4-context.mmd
-  c4-container.mmd
-  c4-component-aggregator.mmd
+  /alerting-service
+  /notification-gateway
+/infra/docker-compose.yml
+/docs (C4)
 
-## Контракты
-### Kafka topic: `ad-click-events`
-Сообщение ClickEvent:
-- eventId: UUID (идемпотентность/дедуп)
-- adId: String
-- clickTs: Instant (event time)
-- userId: String
-- ip: String
-- country: String
-- optional: device, appVersion, etc.
+## Данные
+MetricPoint:
+- metric: String
+- labels: Map<String,String>
+- ts: Instant
+- value: double
 
-### Aggregates storage
-Таблица `ad_click_minute_agg`:
-- ad_id (PK part)
-- minute_bucket (PK part, truncated to minute)
-- country (optional dimension)
-- count (Long)
-- updated_at
+Хранилище (пример ClickHouse):
+- metric String
+- labels Map(String,String) или отдельные колонки (для упрощения)
+- ts DateTime
+- value Float64
 
-Таблица `topn_minute` (optional materialization):
-- minute_bucket
-- country (optional)
-- topn_json (или rows: rank, ad_id, count)
+Важно: контролировать cardinality (labels explosion) — добавить лимиты/валидацию.
 
-## Сервисы
-
-### stream-aggregator
-Spring Boot app с Kafka Streams:
-- consume `ad-click-events`
-- dedup по eventId (state store TTL)
-- windowing (tumbling 1m) по event time + allowed lateness
-- aggregate counts per (adId, minute[, country])
-- write upserts в Aggregated DB (idempotent)
-- optional: compute Top-N per minute и писать отдельно
-
-Настройки:
-- processing guarantee: at-least-once как baseline; exactly-once-v2 если хотите показать зрелость
-- partitioning: ключ Kafka = adId (или adId|country)
+## API
+### collector
+- Pull: `/scrape` вызывает targets (mock registry)
+- Push: `POST /v1/ingest`
 
 ### query-service
-Spring Boot REST:
-- `GET /v1/ads/{adId}/count?windowMinutes=M&country=...`
-- `GET /v1/ads/top?windowMinutes=M&topN=N&country=...`
-Читает из Aggregated DB:
-- для окна M: суммирует последние M минутных бакетов
-- Top-N: либо читает materialized topn_minute, либо выполняет запрос с ORDER BY/LIMIT по последнему бакету и объединяет по окну
+- `GET /v1/query?metric=...&from=...&to=...&labels=...&agg=...`
+- `GET /v1/series?metric=...` (metadata optional)
 
-### event-producer (dev)
-Spring Boot CommandLineRunner или отдельный профиль:
-- генерирует клики в Kafka (rate configurable)
-- поддержка hot keys (несколько adId с повышенной частотой)
+### alerting-service
+- CRUD правил: `POST /v1/rules`, `GET /v1/rules`
+- Runtime: scheduler каждые N секунд вызывает query-service
 
-## Infra (docker-compose)
-- redpanda/kafka
-- clickhouse (или postgres)
-- prometheus (optional)
-- grafana (optional)
+### notification-gateway
+- `POST /v1/notify` принимает алёрты, логирует/сохраняет
 
-## Порядок генерации (Codex checklist)
-1) Создать Gradle multi-module + общие версии зависимостей (BOM Spring Boot).
-2) contracts:
-   - Java DTO + (опц.) Avro schema
-   - unit tests на сериализацию/deserialization
-3) infra: docker-compose + init scripts для БД (DDL).
-4) stream-aggregator:
-   - Kafka Streams topology
-   - dedup store (RocksDB state store)
-   - windowed aggregation
-   - writer слой (JdbcTemplate/R2DBC) с idempotent upsert
-   - integration test: EmbeddedKafka + Testcontainers DB
+## Порядок генерации
+1) Gradle multi-module, shared libs (spring-boot-starter-web, validation, actuator).
+2) contracts: DTO + OpenAPI fragments.
+3) infra: clickhouse + redis + (optional kafka).
+4) ingestion-service:
+   - принимает MetricPoint (direct or from kafka)
+   - batch inserts в storage
+   - integration tests (Testcontainers)
 5) query-service:
-   - OpenAPI (springdoc)
-   - repository + service + controller
-   - integration tests на SQL запросы (Testcontainers)
-6) event-producer:
-   - configurable generator
-7) Observability:
-   - actuator + micrometer metrics (processed/sec, late events, dedup hits, db write latency)
-   - health checks
+   - SQL генератор агрегаций (avg/sum/p95)
+   - cache layer (optional) через Redis
+6) alerting-service:
+   - Rule model: name, query, threshold, forDuration, labels, annotations, route
+   - Scheduler (Spring @Scheduled)
+   - Dedup store (in-memory + TTL, или Redis)
+   - Routing policy (простая: по label team/severity)
+   - Notification retries
+7) collector:
+   - pull targets из списка (application.yml)
+   - преобразует scraped формат в MetricPoint
+8) e2e:
+   - ingest -> query -> rule fires -> notification received
 
 ## Done criteria
-- `docker compose up` поднимает infra
-- producer шлёт события
-- aggregator пишет агрегаты
-- query-service отвечает корректно по count/top
-- есть e2e test или manual сценарий с curl
+- `docker compose up`
+- push ingest работает
+- query возвращает time-series
+- alerting триггерит и отправляет в notification-gateway
